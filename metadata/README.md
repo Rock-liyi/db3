@@ -1,6 +1,6 @@
 # DB3 Contract
 
-the bridge contract for db3 network
+the  contract for db3 network
 
 * contracts/DB3Token.sol the erc20 contract
 * contracts/DB3Rollup.sol the rollup contract
