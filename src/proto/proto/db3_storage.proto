@@ -1,0 +1,170 @@
+//
+// db3_storage.proto
+// Copyright (C) 2023 db3.network Author imotai <codego.me@gmail.com>
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//    http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+syntax = "proto3";
+
+package db3_storage_proto;
+
+import "db3_database_v2.proto";
+import "db3_mutation_v2.proto";
+import "db3_rollup.proto";
+message SendMutationRequest {
+  // a hex signature string
+  string signature = 1;
+  // the payload of mutation
+  bytes payload = 2;
+}
+
+message ExtraItem {
+  string key = 1;
+  string value = 2;
+}
+
+message SendMutationResponse {
+  // a hex format id
+  string id = 1;
+  int32 code = 2;
+  string msg = 3;
+  repeated ExtraItem items = 4;
+  uint64 block = 5;
+  uint32 order = 6;
+}
+
+message GetNonceRequest {
+  // a hex format address
+  string address = 1;
+}
+
+message GetNonceResponse {
+  uint64 nonce = 2;
+}
+
+message SubscribeRequest {
+  // a hex signature string
+  bytes signature = 1;
+  // the payload of topic
+  bytes payload = 2;
+}
+
+// the node will dispatch a block event when a new block has been proposed
+message BlockEvent {
+  uint64 block_id = 1;
+  uint32 mutation_count = 2;
+}
+enum EventType {
+  Block = 0;
+  Mutation = 1;
+  Query = 2;
+}
+message Subscription {
+  repeated EventType topics = 1;
+}
+message EventMessage {
+  EventType type = 1;
+  oneof event {
+    BlockEvent block_event = 3;
+  }
+}
+message GetMutationHeaderRequest {
+  uint64 block_id = 1;
+  uint32 order_id = 2;
+}
+
+message GetMutationHeaderResponse {
+  db3_mutation_v2_proto.MutationHeader header = 1;
+  db3_mutation_v2_proto.MutationRollupStatus status = 2;
+  bytes rollup_tx = 4;
+}
+
+message GetMutationBodyRequest {
+  string id = 1;
+}
+
+message GetMutationBodyResponse {
+  db3_mutation_v2_proto.MutationBody body = 1;
+}
+
+message ScanMutationHeaderRequest {
+  uint32 start = 1;
+  uint32 limit = 2;
+}
+
+message ScanMutationHeaderResponse {
+  repeated db3_mutation_v2_proto.MutationHeader headers = 1;
+}
+
+message ScanRollupRecordRequest {
+  uint32 start = 1;
+  uint32 limit = 2;
+}
+
+message ScanRollupRecordResponse {
+  repeated db3_rollup_proto.RollupRecord records = 1;
+}
+
+message GetDatabaseOfOwnerRequest {
+  // a hex string
+  string owner = 1;
+}
+
+message GetDatabaseOfOwnerResponse {
+  repeated db3_database_v2_proto.DatabaseMessage databases = 1;
+}
+
+message GetCollectionOfDatabaseRequest {
+  string db_addr = 1;
+}
+
+message GetCollectionOfDatabaseResponse {
+  repeated db3_database_v2_proto.Collection collections = 1;
+}
+
+message ScanGcRecordRequest {
+  uint32 start = 1;
+  uint32 limit = 2;
+}
+
+message ScanGcRecordResponse {
+  repeated db3_rollup_proto.GcRecord records = 1;
+}
+
+message BlockRequest {
+  uint64 block_start = 1;
+  uint64 block_end = 2;
+}
+
+message BlockResponse {
+  message MutationWrapper {
+    db3_mutation_v2_proto.MutationHeader header = 1;
+    db3_mutation_v2_proto.MutationBody body = 2;
+  }
+  repeated MutationWrapper mutations = 3;
+}
+
+service StorageNode {
+  rpc SendMutation(SendMutationRequest) returns (SendMutationResponse) {}
+  rpc GetNonce(GetNonceRequest) returns (GetNonceResponse) {}
+  rpc GetMutationHeader(GetMutationHeaderRequest) returns (GetMutationHeaderResponse) {}
+  rpc ScanMutationHeader(ScanMutationHeaderRequest) returns (ScanMutationHeaderResponse) {}
+  rpc GetMutationBody(GetMutationBodyRequest) returns (GetMutationBodyResponse) {}
+  rpc ScanRollupRecord(ScanRollupRecordRequest) returns (ScanRollupRecordResponse) {}
+  rpc GetDatabaseOfOwner(GetDatabaseOfOwnerRequest) returns (GetDatabaseOfOwnerResponse) {}
+  rpc GetCollectionOfDatabase(GetCollectionOfDatabaseRequest) returns (GetCollectionOfDatabaseResponse) {}
+  rpc ScanGcRecord(ScanGcRecordRequest) returns (ScanGcRecordResponse) {}
+  rpc Subscribe(SubscribeRequest) returns (stream EventMessage) {}
+  // method for get block
+  rpc GetBlock(BlockRequest) returns (BlockResponse) {}
+}

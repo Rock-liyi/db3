@@ -23,19 +23,19 @@ package db3_database_proto;
 // the definition of database
 //
 message Database {
-    bytes address = 1;
-    // the owner of the Database
-    bytes sender = 2;
-    // the history of database modification
-    repeated bytes tx = 3;
-    repeated Collection collections = 4;
-    string desc =5;
+  bytes address = 1;
+  // the owner of the Database
+  bytes sender = 2;
+  // the history of database modification
+  repeated bytes tx = 3;
+  repeated Collection collections = 4;
+  string desc = 5;
 }
 
 message Collection {
-    bytes id = 1;
-    string name = 2;
-    repeated Index index_list = 3;
+  bytes id = 1;
+  string name = 2;
+  repeated Index index_list = 3;
 }
 
 message Document {
@@ -46,7 +46,6 @@ message Document {
 }
 
 message Index {
-
   // A field in an index.
   // The field_path describes which field is indexed, the value_mode describes
   // how the field value is indexed.
@@ -149,8 +148,7 @@ message StructuredQuery {
       // A filter on a document field.
       FieldFilter field_filter = 1;
       // A composite filter.
-      // TODO: Support in the future P2
-      // CompositeFilter composite_filter = 2;
+      CompositeFilter composite_filter = 2;
 
       // A filter that takes exactly one argument.
       // TODO: Support in the future P1
@@ -158,6 +156,31 @@ message StructuredQuery {
     }
   }
 
+  // A filter that merges multiple other filters using the given operator.
+  message CompositeFilter {
+    // A composite filter operator.
+    enum Operator {
+      // Unspecified. This value must not be used.
+      OPERATOR_UNSPECIFIED = 0;
+
+      // Documents are required to satisfy all of the combined filters.
+      AND = 1;
+
+      // Documents are required to satisfy at least one of the combined filters.
+      // TODO: support or in the P1
+      // OR = 2;
+    }
+
+    // The operator for combining multiple filters.
+    Operator op = 1;
+
+    // The list of filters to combine.
+    //
+    // Requires:
+    //
+    // * At least one filter is present.
+    repeated Filter filters = 2;
+  }
   // A message that can hold any of the supported value types.
   message Value {
     // Must have a value set.
@@ -408,7 +431,4 @@ message StructuredQuery {
   // * The number of values cannot be greater than the number of fields
   //   specified in the `ORDER BY` clause.
   // Cursor end_at = 8;
-
-
 }
-

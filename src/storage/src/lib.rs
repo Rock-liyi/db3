@@ -16,14 +16,17 @@
 //
 #![feature(iter_intersperse)]
 pub mod account_store;
+pub mod ar_fs;
 pub mod bill_store;
+pub mod collection_key;
 pub mod commit_store;
 mod db3_document;
 mod db_key;
 pub mod db_owner_key;
+pub mod db_owner_key_v2;
 pub mod db_store;
-mod event_key;
-pub mod event_store;
-mod faucet_key;
-pub mod faucet_store;
+pub mod db_store_v2;
+pub mod doc_store;
 pub mod key;
+pub mod mutation_store;
+pub mod state_store;

@@ -25,15 +25,16 @@ use db3_proto::db3_database_proto::structured_query::{Limit, Projection};
 use db3_proto::db3_database_proto::{Database, Document, StructuredQuery};
 use db3_proto::db3_mutation_proto::PayloadType;
 use db3_proto::db3_node_proto::{
-    storage_node_client::StorageNodeClient, CloseSessionRequest, GetAccountRequest,
-    GetDocumentRequest, GetSessionInfoRequest, NetworkStatus, OpenSessionRequest,
-    OpenSessionResponse, QueryBillKey, QueryBillRequest, RunQueryRequest, RunQueryResponse,
-    SessionIdentifier, ShowDatabaseRequest, ShowNetworkStatusRequest, SubscribeRequest,
+    storage_node_client::StorageNodeClient, BlockRequest, BlockResponse, BlockType,
+    CloseSessionRequest, GetAccountRequest, GetDocumentRequest, GetSessionInfoRequest,
+    NetworkStatus, OpenSessionRequest, OpenSessionResponse, QueryBillKey, QueryBillRequest,
+    RunQueryRequest, RunQueryResponse, SessionIdentifier, ShowDatabaseRequest,
+    ShowNetworkStatusRequest, SubscribeRequest,
 };
 
 use db3_proto::db3_event_proto::{
-    event_filter, event_message, BlockEventFilter, EventFilter, EventType, MutationEventFilter,
-    Subscription,
+    event_filter, event_message, BlockEventFilter, EventFilter, EventMessage, EventType,
+    MutationEventFilter, Subscription,
 };
 use db3_proto::db3_session_proto::{OpenSessionPayload, QuerySessionInfo};
 use db3_session::session_manager::{SessionPool, SessionStatus};
@@ -48,7 +49,7 @@ use prost::Message;
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tonic::Status;
+use tonic::{Status, Streaming};
 use uuid::Uuid;
 
 pub struct StoreSDK {
@@ -345,7 +346,11 @@ impl StoreSDK {
         }
     }
 
-    pub async fn open_console(&mut self, all: bool) -> std::result::Result<(), Status> {
+    pub async fn subscribe_event_message(
+        &self,
+        all: bool,
+    ) -> Result<tonic::Response<Streaming<EventMessage>>, Status> {
+        let session_token = self.get_token().await?;
         let m_filter = match all {
             true => MutationEventFilter {
                 sender: "".to_string(),
@@ -367,13 +372,16 @@ impl StoreSDK {
                 },
             ],
         };
-        let session_token = self.keep_session(true).await?;
         let req = SubscribeRequest {
             session_token,
             sub: Some(sub),
         };
         let mut client = self.client.as_ref().clone();
-        let mut stream = client.subscribe(req).await?.into_inner();
+        client.subscribe(req).await
+    }
+    /// open a console to subscribe the event
+    pub async fn open_console(&mut self, all: bool) -> Result<(), Status> {
+        let mut stream = self.subscribe_event_message(all).await?.into_inner();
         while let Some(event) = stream.message().await? {
             match event.event {
                 Some(event_message::Event::MutationEvent(me)) => {
@@ -425,6 +433,28 @@ impl StoreSDK {
             Ok(_) => Ok(response.clone()),
             Err(e) => Err(Status::internal(format!("Fail to open session {e}"))),
         }
+    }
+
+    async fn get_token(&self) -> std::result::Result<String, Status> {
+        let payload = OpenSessionPayload {
+            header: Uuid::new_v4().to_string(),
+            start_time: Utc::now().timestamp(),
+        };
+
+        let r = match self.use_typed_format {
+            true => {
+                let r = self.wrap_typed_open_session(&payload)?;
+                r
+            }
+            false => {
+                let r = self.wrap_proto_open_session(&payload)?;
+                r
+            }
+        };
+        let request = tonic::Request::new(r);
+        let mut client = self.client.as_ref().clone();
+        let response = client.open_query_session(request).await?.into_inner();
+        Ok(response.session_token)
     }
 
     fn wrap_proto_open_session(
@@ -694,6 +724,21 @@ impl StoreSDK {
             SessionStatus::from_i32(response.session_status).unwrap(),
         ))
     }
+
+    pub async fn fetch_block_by_height(&self, height: u64) -> Result<BlockResponse, Status> {
+        let request = tonic::Request::new(BlockRequest {
+            block_height: height,
+            block_hash: vec![],
+            block_type: BlockType::BlockByHeight.into(),
+        });
+        let mut client = self.client.as_ref().clone();
+        let response = client
+            .get_block(request)
+            .await
+            .map_err(|e| Status::internal(format!("fail to get block from node service: {e}")))?
+            .into_inner();
+        Ok(response)
+    }
 }
 
 #[cfg(test)]
@@ -714,9 +759,9 @@ mod tests {
     use db3_proto::db3_session_proto::OpenSessionPayload;
     use std::sync::Arc;
     use std::time;
+    use tendermint::block;
     use tonic::transport::Endpoint;
     use uuid::Uuid;
-
     async fn run_get_bills_flow(
         use_typed_format: bool,
         client: Arc<StorageNodeClient<tonic::transport::Channel>>,
@@ -744,6 +789,18 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    async fn run_fetch_block_flow(
+        use_typed_format: bool,
+        client: Arc<StorageNodeClient<tonic::transport::Channel>>,
+        counter: i64,
+    ) {
+        let (_, signer) = sdk_test::gen_secp256k1_signer(counter);
+        let sdk = StoreSDK::new(client, signer, use_typed_format);
+        let res = sdk.fetch_block_by_height(1).await;
+        assert!(res.is_ok(), "{:?}", res);
+        let block: block::Block = serde_json::from_slice(res.unwrap().block.as_slice()).unwrap();
+        assert_eq!(block.header.height.value(), 1);
+    }
     #[tokio::test]
     async fn get_bills_smoke_test() {
         let ep = "http://127.0.0.1:26659";
@@ -940,4 +997,14 @@ mod tests {
     /// write a test case for method get_my_database
     #[tokio::test]
     async fn test_get_my_database() {}
+
+    #[tokio::test]
+    async fn fetch_block_by_height() {
+        let ep = "http://127.0.0.1:26659";
+        let rpc_endpoint = Endpoint::new(ep.to_string()).unwrap();
+        let channel = rpc_endpoint.connect_lazy();
+        let client = Arc::new(StorageNodeClient::new(channel));
+
+        run_fetch_block_flow(false, client.clone(), 200).await;
+    }
 }

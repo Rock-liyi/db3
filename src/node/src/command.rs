@@ -18,36 +18,35 @@
 use crate::abci_impl::AbciImpl;
 use crate::auth_storage::AuthStorage;
 use crate::context::Context;
-use crate::json_rpc_impl;
+use crate::indexer_impl::IndexerNodeImpl;
 use crate::node_storage::NodeStorage;
+use crate::rollup_executor::RollupExecutorConfig;
 use crate::storage_node_impl::StorageNodeImpl;
-use actix_cors::Cors;
-use actix_web::{rt, web, App, HttpServer};
+use crate::storage_node_light_impl::{StorageNodeV2Config, StorageNodeV2Impl};
 use clap::Parser;
-use db3_bridge::evm_chain_watcher::{EvmChainConfig, EvmChainWatcher};
-use db3_bridge::storage_chain_minter::StorageChainMinter;
-use db3_cmd::command::{DB3ClientCommand, DB3ClientContext};
+use db3_cmd::command::{DB3ClientCommand, DB3ClientContext, DB3ClientContextV2};
 use db3_crypto::db3_address::DB3Address;
 use db3_crypto::db3_signer::Db3MultiSchemeSigner;
-use db3_faucet::{
-    faucet_node_impl::{FaucetNodeConfig, FaucetNodeImpl},
-    fund_faucet,
-};
 use db3_proto::db3_event_proto::{EventMessage, Subscription};
-use db3_proto::db3_faucet_proto::faucet_node_server::FaucetNodeServer;
+use db3_proto::db3_indexer_proto::indexer_node_server::IndexerNodeServer;
 use db3_proto::db3_node_proto::storage_node_client::StorageNodeClient;
 use db3_proto::db3_node_proto::storage_node_server::StorageNodeServer;
+use db3_proto::db3_storage_proto::storage_node_client::StorageNodeClient as StorageNodeV2Client;
+use db3_proto::db3_storage_proto::storage_node_server::StorageNodeServer as StorageNodeV2Server;
+use db3_proto::db3_storage_proto::{
+    EventMessage as EventMessageV2, Subscription as SubscriptionV2,
+};
 use db3_sdk::mutation_sdk::MutationSDK;
 use db3_sdk::store_sdk::StoreSDK;
-use db3_storage::event_store::EventStore;
-use db3_storage::faucet_store::FaucetStore;
-use ethers::signers::LocalWallet;
+use db3_sdk::store_sdk_v2::StoreSDKV2;
+use db3_storage::db_store_v2::DBStoreV2Config;
+use db3_storage::doc_store::DocStoreConfig;
+use db3_storage::mutation_store::MutationStoreConfig;
+use db3_storage::state_store::StateStoreConfig;
 use http::Uri;
 use merkdb::Merk;
-use redb::Database;
 use std::boxed::Box;
 use std::io::{stderr, stdout};
-use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -78,6 +77,53 @@ const ABOUT: &str = "
 #[clap(name = "db3")]
 #[clap(about = ABOUT, long_about = None)]
 pub enum DB3Command {
+    /// Start the store node
+    #[clap(name = "store")]
+    Store {
+        /// Bind the gprc server to this .
+        #[clap(long, default_value = "127.0.0.1")]
+        public_host: String,
+        /// The port of grpc api
+        #[clap(long, default_value = "26619")]
+        public_grpc_port: u16,
+        /// Log more logs
+        #[clap(short, long)]
+        verbose: bool,
+        /// The database path for mutation
+        #[clap(long, default_value = "./mutation_db")]
+        mutation_db_path: String,
+        /// The database path for state
+        #[clap(long, default_value = "./state_db")]
+        state_db_path: String,
+        /// The database path for doc db
+        #[clap(long, default_value = "./doc_db")]
+        doc_db_path: String,
+        /// The network id
+        #[clap(long, default_value = "10")]
+        network_id: u64,
+        /// The block interval
+        #[clap(long, default_value = "2000")]
+        block_interval: u64,
+        /// The interval of rollup
+        #[clap(long, default_value = "60000")]
+        rollup_interval: u64,
+        /// The min data byte size for rollup
+        #[clap(long, default_value = "102400")]
+        rollup_min_data_size: u64,
+        /// The data path of rollup
+        #[clap(long, default_value = "./rollup_data")]
+        rollup_data_path: String,
+        /// The Ar miner node
+        #[clap(long, default_value = "http://127.0.0.1:1984/")]
+        ar_node_url: String,
+        /// The Ar wallet path
+        #[clap(long, default_value = "./wallet.json")]
+        ar_key_path: String,
+        /// The min gc round offset
+        #[clap(long, default_value = "8")]
+        min_gc_round_offset: u64,
+    },
+
     /// Start db3 network
     #[clap(name = "start")]
     Start {
@@ -87,8 +133,6 @@ pub enum DB3Command {
         /// The port of grpc api
         #[clap(long, default_value = "26659")]
         public_grpc_port: u16,
-        #[clap(long, default_value = "26670")]
-        public_json_rpc_port: u16,
         /// Bind the abci server to this port.
         #[clap(long, default_value = "26658")]
         abci_port: u16,
@@ -126,6 +170,31 @@ pub enum DB3Command {
         public_grpc_url: String,
     },
 
+    /// Start db3 indexer
+    #[clap(name = "indexer")]
+    Indexer {
+        /// Bind the gprc server to this .
+        #[clap(long, default_value = "127.0.0.1")]
+        public_host: String,
+        /// The port of grpc api
+        #[clap(long, default_value = "26639")]
+        public_grpc_port: u16,
+        /// the store grpc url
+        #[clap(
+            long = "db3_storage_grpc_url",
+            default_value = "http://127.0.0.1:26619"
+        )]
+        db3_storage_grpc_url: String,
+        #[clap(short, long, default_value = "./index_meta_db")]
+        meta_db_path: String,
+        #[clap(short, long, default_value = "./index_doc_db")]
+        doc_db_path: String,
+        #[clap(long, default_value = "10")]
+        network_id: u64,
+        #[clap(short, long)]
+        verbose: bool,
+    },
+
     /// Run db3 client
     #[clap(name = "client")]
     Client {
@@ -135,81 +204,6 @@ pub enum DB3Command {
         /// the subcommand
         #[clap(subcommand)]
         cmd: Option<DB3ClientCommand>,
-    },
-
-    /// Run db3 faucet
-    #[clap(name = "faucet")]
-    Faucet {
-        /// Bind the gprc server to this .
-        #[clap(long, default_value = "127.0.0.1")]
-        public_host: String,
-        /// The port of grpc api
-        #[clap(long, default_value = "26649")]
-        public_grpc_port: u16,
-        /// the websocket addres of evm chain
-        #[clap(long)]
-        evm_chain_ws: String,
-        /// the erc20 address
-        #[clap(long)]
-        token_address: String,
-        /// the database path to store all faucets
-        #[clap(long = "db_path", default_value = "./faucet.db")]
-        db_path: String,
-        /// the default amount = 1 db3
-        #[clap(long, default_value = "1000000000")]
-        amount: u64,
-        #[clap(short, long)]
-        verbose: bool,
-        /// Suppress all output logging (overrides --verbose).
-        #[clap(short, long)]
-        quiet: bool,
-    },
-    /// Run db3 bridge
-    #[clap(name = "bridge")]
-    Bridge {
-        /// the websocket address of evm chain
-        #[clap(long)]
-        evm_chain_ws: String,
-        /// the evm chain id
-        #[clap(long, default_value = "1")]
-        evm_chain_id: u32,
-        /// the roll contract address
-        #[clap(long)]
-        contract_address: String,
-        /// the db3 storage chain grpc url
-        #[clap(
-            long = "db3_storage_grpc_url",
-            default_value = "http://127.0.0.1:26659"
-        )]
-        db3_storage_grpc_url: String,
-        /// the database path to store all events
-        #[clap(long = "db_path", default_value = "./db")]
-        db_path: String,
-        #[clap(short, long)]
-        verbose: bool,
-        /// Suppress all output logging (overrides --verbose).
-        #[clap(short, long)]
-        quiet: bool,
-    },
-
-    /// this is just for development
-    #[clap(name = "fund-faucet")]
-    FundFaucet {
-        /// the websocket address of evm chain
-        #[clap(long)]
-        evm_chain_ws: String,
-        /// the private key of wallet
-        #[clap(long)]
-        private_key: String,
-        /// the faucet evm address
-        #[clap(long)]
-        faucet_address: String,
-        /// the erc20 contract address
-        #[clap(long)]
-        erc20_address: String,
-        /// the fund amount 100 db3
-        #[clap(long, default_value = "100000000000")]
-        amount: u64,
     },
 }
 
@@ -245,127 +239,75 @@ impl DB3Command {
             store_sdk: Some(store_sdk),
         }
     }
+    fn build_context_v2(public_grpc_url: &str) -> DB3ClientContextV2 {
+        let uri = public_grpc_url.parse::<Uri>().unwrap();
+        let endpoint = match uri.scheme_str() == Some("https") {
+            true => {
+                let rpc_endpoint = Endpoint::new(public_grpc_url.to_string())
+                    .unwrap()
+                    .tls_config(ClientTlsConfig::new())
+                    .unwrap();
+                rpc_endpoint
+            }
+            false => {
+                let rpc_endpoint = Endpoint::new(public_grpc_url.to_string()).unwrap();
+                rpc_endpoint
+            }
+        };
+        let channel = endpoint.connect_lazy();
+        let node = Arc::new(StorageNodeV2Client::new(channel));
+        if !db3_cmd::keystore::KeyStore::has_key(None) {
+            db3_cmd::keystore::KeyStore::recover_keypair(None).unwrap();
+        }
+        let kp = db3_cmd::keystore::KeyStore::get_keypair(None).unwrap();
+        let signer = Db3MultiSchemeSigner::new(kp);
+        let store_sdk = StoreSDKV2::new(node, signer);
+        DB3ClientContextV2 {
+            store_sdk: Some(store_sdk),
+        }
+    }
 
     pub async fn execute(self) {
         match self {
-            DB3Command::FundFaucet {
-                evm_chain_ws,
-                private_key,
-                faucet_address,
-                erc20_address,
-                amount,
-            } => {
-                fund_faucet::send_fund_to_faucet(
-                    evm_chain_ws.as_str(),
-                    private_key.as_str(),
-                    erc20_address.as_str(),
-                    faucet_address.as_str(),
-                    amount,
-                )
-                .await
-                .unwrap();
-            }
-            DB3Command::Faucet {
+            DB3Command::Store {
                 public_host,
                 public_grpc_port,
-                evm_chain_ws,
-                token_address,
-                db_path,
-                amount,
                 verbose,
-                quiet,
+                mutation_db_path,
+                state_db_path,
+                doc_db_path,
+                network_id,
+                block_interval,
+                rollup_interval,
+                rollup_min_data_size,
+                rollup_data_path,
+                ar_node_url,
+                ar_key_path,
+                min_gc_round_offset,
             } => {
-                let log_level = if quiet {
-                    LevelFilter::OFF
-                } else if verbose {
+                let log_level = if verbose {
                     LevelFilter::DEBUG
                 } else {
                     LevelFilter::INFO
                 };
                 tracing_subscriber::fmt().with_max_level(log_level).init();
                 info!("{ABOUT}");
-                let path = Path::new(&db_path);
-                let db = Arc::new(Database::create(&path).unwrap());
-                {
-                    let write_txn = db.begin_write().unwrap();
-                    FaucetStore::init_table(write_txn).unwrap();
-                }
-                let mut home = dirs::home_dir().unwrap();
-                home.push(".faucet");
-                let home = Some(home);
-                if !db3_cmd::keystore::KeyStore::has_key(home.clone()) {
-                    db3_cmd::keystore::KeyStore::recover_keypair(home.clone()).unwrap();
-                }
-                let node_list: Vec<String> = vec![evm_chain_ws];
-                let config = FaucetNodeConfig {
-                    erc20_address: token_address,
-                    node_list,
-                    amount,
-                };
-                let pk = db3_cmd::keystore::KeyStore::get_private_key(home.clone()).unwrap();
-                if let Ok(wallet) = pk.parse::<LocalWallet>() {
-                    if let Ok(node) = FaucetNodeImpl::new(db, config, wallet).await {
-                        let addr = format!("{public_host}:{public_grpc_port}");
-                        info!("start db3 faucet node on public addr {}", addr);
-                        let cors_layer = CorsLayer::new()
-                            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
-                            .allow_headers(Any)
-                            .allow_origin(Any);
-                        Server::builder()
-                            .accept_http1(true)
-                            .layer(cors_layer)
-                            .layer(tonic_web::GrpcWebLayer::new())
-                            .add_service(FaucetNodeServer::new(node))
-                            .serve(addr.parse().unwrap())
-                            .await
-                            .unwrap();
-                    }
-                }
-            }
-            DB3Command::Bridge {
-                evm_chain_ws,
-                evm_chain_id,
-                contract_address,
-                db3_storage_grpc_url,
-                db_path,
-                verbose,
-                quiet,
-            } => {
-                let log_level = if quiet {
-                    LevelFilter::OFF
-                } else if verbose {
-                    LevelFilter::DEBUG
-                } else {
-                    LevelFilter::INFO
-                };
-                tracing_subscriber::fmt().with_max_level(log_level).init();
-                info!("{ABOUT}");
-
-                let (sender, receiver) = std::sync::mpsc::sync_channel::<(u32, u64)>(1024);
-                let path = Path::new(&db_path);
-                let db = Arc::new(Database::create(&path).unwrap());
-                {
-                    let write_txn = db.begin_write().unwrap();
-                    EventStore::init_table(write_txn).unwrap();
-                }
-
-                let node_list: Vec<String> = vec![evm_chain_ws];
-                let config = EvmChainConfig {
-                    chain_id: evm_chain_id,
-                    node_list,
-                    contract_address: contract_address.to_string(),
-                };
-
-                let watcher = EvmChainWatcher::new(config, db.clone()).await.unwrap();
-                let watcher_handler = thread::spawn(move || {
-                    rt::System::new()
-                        .block_on(async { watcher.start(sender).await })
-                        .unwrap();
-                });
-                let ctx = Self::build_context(db3_storage_grpc_url.as_ref());
-                let sdk = ctx.mutation_sdk.unwrap();
-                let minter = StorageChainMinter::new(db, sdk);
-                minter.start(receiver).await.unwrap();
+                Self::start_store_grpc_service(
+                    public_host.as_str(),
+                    public_grpc_port,
+                    mutation_db_path.as_str(),
+                    state_db_path.as_str(),
+                    doc_db_path.as_str(),
+                    network_id,
+                    block_interval,
+                    rollup_interval,
+                    rollup_min_data_size,
+                    rollup_data_path.as_str(),
+                    ar_node_url.as_str(),
+                    ar_key_path.as_str(),
+                    min_gc_round_offset,
+                )
+                .await;
                 let running = Arc::new(AtomicBool::new(true));
                 let r = running.clone();
                 ctrlc::set_handler(move || {
@@ -377,8 +319,7 @@ impl DB3Command {
                         let ten_millis = Duration::from_millis(10);
                         thread::sleep(ten_millis);
                     } else {
-                        info!("stop db3 bridge ...");
-                        watcher_handler.join().unwrap();
+                        info!("stop db3 store node...");
                         break;
                     }
                 }
@@ -389,6 +330,71 @@ impl DB3Command {
                 db3_cmd::console::start_console(ctx, &mut stdout(), &mut stderr())
                     .await
                     .unwrap();
+            }
+
+            DB3Command::Indexer {
+                public_host,
+                public_grpc_port,
+                db3_storage_grpc_url,
+                meta_db_path,
+                doc_db_path,
+                network_id,
+                verbose,
+            } => {
+                let log_level = if verbose {
+                    LevelFilter::DEBUG
+                } else {
+                    LevelFilter::INFO
+                };
+
+                tracing_subscriber::fmt().with_max_level(log_level).init();
+                info!("{ABOUT}");
+
+                let ctx = Self::build_context_v2(db3_storage_grpc_url.as_ref());
+
+                let doc_store_conf = DocStoreConfig {
+                    db_root_path: doc_db_path,
+                    in_memory_db_handle_limit: 16,
+                };
+                let db_store_config = DBStoreV2Config {
+                    db_path: meta_db_path.to_string(),
+                    db_store_cf_name: "db_store_cf".to_string(),
+                    doc_store_cf_name: "doc_store_cf".to_string(),
+                    collection_store_cf_name: "col_store_cf".to_string(),
+                    index_store_cf_name: "idx_store_cf".to_string(),
+                    doc_owner_store_cf_name: "doc_owner_store_cf".to_string(),
+                    db_owner_store_cf_name: "db_owner_cf".to_string(),
+                    scan_max_limit: 1000,
+                    enable_doc_store: true,
+                    doc_store_conf,
+                };
+
+                let indexer = IndexerNodeImpl::new(db_store_config, network_id).unwrap();
+                let addr = format!("{public_host}:{public_grpc_port}");
+                let indexer_for_syncing = indexer.clone();
+                let listen = tokio::spawn(async move {
+                    info!("start syncing data from storage node");
+                    indexer_for_syncing
+                        .start(ctx.store_sdk.unwrap())
+                        .await
+                        .unwrap();
+                });
+                info!("start db3 indexer node on public addr {}", addr);
+                let cors_layer = CorsLayer::new()
+                    .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+                    .allow_headers(Any)
+                    .allow_origin(Any);
+                Server::builder()
+                    .accept_http1(true)
+                    .layer(cors_layer)
+                    .layer(tonic_web::GrpcWebLayer::new())
+                    .add_service(IndexerNodeServer::new(indexer))
+                    .serve(addr.parse().unwrap())
+                    .await
+                    .unwrap();
+                let (r1,) = tokio::join!(listen);
+                r1.unwrap();
+                info!("exit standalone indexer")
             }
 
             DB3Command::Client {
@@ -406,7 +412,6 @@ impl DB3Command {
             DB3Command::Start {
                 public_host,
                 public_grpc_port,
-                public_json_rpc_port,
                 abci_port,
                 tendermint_port,
                 read_buf_size,
@@ -444,7 +449,6 @@ impl DB3Command {
                     Self::start_abci_service(abci_port, read_buf_size, node_store.clone());
                 let tm_addr = format!("http://127.0.0.1:{tendermint_port}");
                 let ws_tm_addr = format!("ws://127.0.0.1:{tendermint_port}/websocket");
-                info!("db3 json rpc server will connect to tendermint {tm_addr}");
                 let client = HttpClient::new(tm_addr.as_str()).unwrap();
                 let context = Context {
                     node_store: node_store.clone(),
@@ -452,11 +456,6 @@ impl DB3Command {
                     ws_url: ws_tm_addr,
                     disable_query_session,
                 };
-                let json_rpc_handler = Self::start_json_rpc_service(
-                    &public_host,
-                    public_json_rpc_port,
-                    context.clone(),
-                );
                 Self::start_grpc_service(&public_host, public_grpc_port, disable_grpc_web, context)
                     .await;
                 let running = Arc::new(AtomicBool::new(true));
@@ -472,12 +471,97 @@ impl DB3Command {
                     } else {
                         info!("stop db3...");
                         abci_handler.join().unwrap();
-                        json_rpc_handler.join().unwrap();
                         break;
                     }
                 }
             }
         }
+    }
+    /// Start store grpc service
+    async fn start_store_grpc_service(
+        public_host: &str,
+        public_grpc_port: u16,
+        mutation_db_path: &str,
+        state_db_path: &str,
+        doc_db_path: &str,
+        network_id: u64,
+        block_interval: u64,
+        rollup_interval: u64,
+        rollup_min_data_size: u64,
+        rollup_data_path: &str,
+        ar_node_url: &str,
+        ar_key_path: &str,
+        min_gc_round_offset: u64,
+    ) {
+        let addr = format!("{public_host}:{public_grpc_port}");
+        let rollup_config = RollupExecutorConfig {
+            rollup_interval,
+            temp_data_path: rollup_data_path.to_string(),
+            ar_node_url: ar_node_url.to_string(),
+            ar_key_path: ar_key_path.to_string(),
+            min_rollup_size: rollup_min_data_size,
+            min_gc_round_offset,
+        };
+        let store_config = MutationStoreConfig {
+            db_path: mutation_db_path.to_string(),
+            block_store_cf_name: "block_store_cf".to_string(),
+            tx_store_cf_name: "tx_store_cf".to_string(),
+            rollup_store_cf_name: "rollup_store_cf".to_string(),
+            gc_cf_name: "gc_store_cf".to_string(),
+            message_max_buffer: 4 * 1024,
+            scan_max_limit: 50,
+            block_state_cf_name: "block_state_cf".to_string(),
+        };
+        let state_config = StateStoreConfig {
+            db_path: state_db_path.to_string(),
+        };
+        let db_store_config = DBStoreV2Config {
+            db_path: doc_db_path.to_string(),
+            db_store_cf_name: "db_store_cf".to_string(),
+            doc_store_cf_name: "doc_store_cf".to_string(),
+            collection_store_cf_name: "col_store_cf".to_string(),
+            index_store_cf_name: "idx_store_cf".to_string(),
+            doc_owner_store_cf_name: "doc_owner_store_cf".to_string(),
+            db_owner_store_cf_name: "db_owner_cf".to_string(),
+            scan_max_limit: 1000,
+            enable_doc_store: false,
+            doc_store_conf: DocStoreConfig::default(),
+        };
+
+        let (sender, receiver) = tokio::sync::mpsc::channel::<(
+            DB3Address,
+            SubscriptionV2,
+            Sender<std::result::Result<EventMessageV2, Status>>,
+        )>(1024);
+        let config = StorageNodeV2Config {
+            store_config,
+            state_config,
+            rollup_config,
+            db_store_config,
+            network_id,
+            block_interval,
+        };
+        let storage_node = StorageNodeV2Impl::new(config, sender).unwrap();
+        info!(
+            "start db3 store node on public addr {} and network {}",
+            addr, network_id
+        );
+        std::fs::create_dir_all(rollup_data_path).unwrap();
+        storage_node.keep_subscription(receiver).await.unwrap();
+        storage_node.start_to_produce_block().await;
+        storage_node.start_to_rollup().await;
+        let cors_layer = CorsLayer::new()
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            .allow_headers(Any)
+            .allow_origin(Any);
+        Server::builder()
+            .accept_http1(true)
+            .layer(cors_layer)
+            .layer(tonic_web::GrpcWebLayer::new())
+            .add_service(StorageNodeV2Server::new(storage_node))
+            .serve(addr.parse().unwrap())
+            .await
+            .unwrap();
     }
 
     /// Start GRPC Service
@@ -519,44 +603,7 @@ impl DB3Command {
                 .await
                 .unwrap();
         }
-    }
-
-    ///
-    /// Start JSON RPC Service
-    ///
-    fn start_json_rpc_service(
-        public_host: &str,
-        public_json_rpc_port: u16,
-        context: Context,
-    ) -> JoinHandle<()> {
-        let local_public_host = public_host.to_string();
-        let addr = format!("{local_public_host}:{public_json_rpc_port}");
-        info!("start json rpc server with addr {}", addr.as_str());
-        let handler = thread::spawn(move || {
-            rt::System::new()
-                .block_on(async {
-                    HttpServer::new(move || {
-                        let cors = Cors::default()
-                            .allow_any_origin()
-                            .allow_any_method()
-                            .allow_any_header()
-                            .max_age(3600);
-                        App::new()
-                            .app_data(web::Data::new(context.clone()))
-                            .wrap(cors)
-                            .service(
-                                web::resource("/").route(web::post().to(json_rpc_impl::rpc_router)),
-                            )
-                    })
-                    .disable_signals()
-                    .bind((local_public_host, public_json_rpc_port))
-                    .unwrap()
-                    .run()
-                    .await
-                })
-                .unwrap();
-        });
-        handler
+        info!("db3 storage node exit");
     }
 
     ///
@@ -585,6 +632,7 @@ impl DB3Command {
         handler
     }
 }
+
 #[cfg(test)]
 mod tests {
     use crate::command::DB3Command;
@@ -625,6 +673,11 @@ mod tests {
                     .to_string(),
                 r#"{"name":"idx2","fields":[{"field_path":"age","value_mode":{"Order":1}}]}"#
                     .to_string(),
+                r#"{"name":"idx_name_age","fields":[
+                    {"field_path":"name","value_mode":{"Order":1}},
+                    {"field_path":"age","value_mode":{"Order":1}}
+                ]}"#
+                .to_string(),
             ],
         };
 
@@ -687,7 +740,7 @@ mod tests {
         assert!(cmd.execute(&mut ctx).await.is_ok());
         std::thread::sleep(time::Duration::from_millis(2000));
 
-        // run show document limit 2
+        // run show document no limit
         // r#"{"name": "John Doe","age": 43,"phones": ["+44 1234567","+44 2345678"]}"#
         // r#"{"name": "Mike","age": 44,"phones": ["+44 1234567","+44 2345678"]}"#.to_string(),
         // r#"{"name": "Bill","age": 44,"phones": ["+44 1234567","+44 2345678"]}"#.to_string(),
@@ -704,7 +757,7 @@ mod tests {
         let doc_id3 = table.get_row(2).unwrap().get_cell(0).unwrap().get_content();
         let doc_id4 = table.get_row(3).unwrap().get_cell(0).unwrap().get_content();
 
-        // run show document limit 2
+        // run show document limit 3
         let cmd = DB3ClientCommand::ShowDocument {
             addr: addr.clone(),
             collection_name: collection_books.to_string(),
@@ -714,32 +767,76 @@ mod tests {
         assert_eq!(3, cmd.execute(&mut ctx).await.unwrap().len());
 
         // run show document --filter = '{"field": "name", "value": "Bill", "op": "=="}'
-        let cmd = DB3ClientCommand::ShowDocument {
-            addr: addr.clone(),
-            collection_name: collection_books.to_string(),
-            filter: r#"{"field": "name", "value": "Bill", "op": "=="}"#.to_string(),
-            limit: -1,
-        };
-        if let Ok(table) = cmd.execute(&mut ctx).await {
-            assert_eq!(2, table.len());
-            assert!(table
-                .get_row(0)
-                .unwrap()
-                .get_cell(2)
-                .unwrap()
-                .get_content()
-                .contains(r#""name": String("Bill")"#));
-            assert!(table
-                .get_row(1)
-                .unwrap()
-                .get_cell(2)
-                .unwrap()
-                .get_content()
-                .contains(r#""name": String("Bill")"#));
-        } else {
-            assert!(false)
-        }
 
+        for (filter, exp) in [
+            (
+                r#"{"field": "name", "value": "Bill", "op": "=="}"#,
+                vec![r#""name": String("Bill")"#, r#""name": String("Bill")"#],
+            ),
+            (
+                r#"{"field": "name", "value": "John Doe", "op": "<"}"#,
+                vec![r#""name": String("Bill")"#, r#""name": String("Bill")"#],
+            ),
+            (
+                r#"{"field": "name", "value": "John Doe", "op": "<="}"#,
+                vec![
+                    r#""name": String("Bill")"#,
+                    r#""name": String("Bill")"#,
+                    r#""name": String("John Doe")"#,
+                ],
+            ),
+            (
+                r#"{"field": "name", "value": "John Doe", "op": ">="}"#,
+                vec![r#""name": String("John Doe")"#, r#""name": String("Mike")"#],
+            ),
+            (
+                r#"{"field": "name", "value": "John Doe", "op": ">"}"#,
+                vec![r#""name": String("Mike")"#],
+            ),
+            (
+                r#"{"and":
+                [
+                    {"field": "name", "value": "Bill", "op": "=="},
+                    {"field": "age", "value": 44, "op": "=="}
+                ]}"#,
+                vec![r#""name": String("Bill")"#],
+            ),
+            (
+                r#"{"and":
+                [
+                    {"field": "name", "value": "Bill", "op": "=="},
+                    {"field": "age", "value": 46, "op": "=="}
+                ]}"#,
+                vec![],
+            ),
+        ] {
+            let cmd = DB3ClientCommand::ShowDocument {
+                addr: addr.clone(),
+                collection_name: collection_books.to_string(),
+                filter: filter.to_string(),
+                limit: -1,
+            };
+            let res = cmd.execute(&mut ctx).await;
+            if let Ok(table) = res {
+                assert_eq!(exp.len(), table.len());
+                for i in 0..exp.len() {
+                    assert!(
+                        table
+                            .get_row(i)
+                            .unwrap()
+                            .get_cell(2)
+                            .unwrap()
+                            .get_content()
+                            .contains(exp[i]),
+                        "expect contains {} but {}",
+                        exp[i],
+                        table.get_row(i).unwrap().get_cell(2).unwrap().get_content()
+                    );
+                }
+            } else {
+                assert!(false, "{:?}", res);
+            }
+        }
         // run show document --filter = '{"field": "age", "value": 44, "op": "=="}'
         let cmd = DB3ClientCommand::ShowDocument {
             addr: addr.clone(),

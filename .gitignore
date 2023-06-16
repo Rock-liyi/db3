@@ -22,3 +22,8 @@ db3.log
 /bridge/node_modules/
 /bridge/cache/
 /bridge/artifacts/
+indexer.db
+indexer
+tools/mutation_db
+tools/doc_db
+tools/state_db

@@ -1,6 +1,7 @@
 #! /bin/bash
 
 cargo fmt
-cd bridge && npx prettier --write 'contracts/**/*.sol'
+npx buf format -w src/proto/proto
+#cd metadata && npx prettier --write 'contracts/**/*.sol'
 
 

@@ -25,7 +25,6 @@ use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
 pub const DB3_ADDRESS_LENGTH: usize = 20;
-
 #[serde_as]
 #[derive(
     Eq, Default, PartialEq, Ord, PartialOrd, Copy, Clone, Hash, Serialize, Deserialize, JsonSchema,
@@ -46,7 +45,7 @@ impl DB3Address {
     pub fn optional_address_as_hex<S>(
         key: &Option<DB3Address>,
         serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    ) -> std::result::Result<S::Ok, S::Error>
     where
         S: serde::ser::Serializer,
     {
@@ -67,9 +66,32 @@ impl DB3Address {
     pub fn to_inner(self) -> [u8; DB3_ADDRESS_LENGTH] {
         self.0
     }
+
     #[inline]
     pub fn to_hex(&self) -> String {
         format!("0x{}", hex::encode(self.0.as_ref()))
+    }
+    #[inline]
+    pub fn from_hex(input: &str) -> Result<Self, DB3Error> {
+        if input.starts_with("0x") {
+            let new_input = &input[2..];
+            let data = hex::decode(new_input)
+                .map_err(|e| DB3Error::KeyCodecError(format!("fail to decode tx id for {e}")))?;
+            Self::try_from(data.as_slice())
+        } else {
+            let data = hex::decode(input)
+                .map_err(|e| DB3Error::KeyCodecError(format!("fail to decode tx id for {e}")))?;
+            Self::try_from(data.as_slice())
+        }
+    }
+
+    pub fn from_evm_public_key(pk: &DB3PublicKey) -> Self {
+        let mut hasher = Sha3_256::default();
+        hasher.update(pk);
+        let g_arr = hasher.finalize();
+        let mut res = [0u8; DB3_ADDRESS_LENGTH];
+        res.copy_from_slice(&AsRef::<[u8]>::as_ref(&g_arr)[..DB3_ADDRESS_LENGTH]);
+        DB3Address(res)
     }
 }
 
