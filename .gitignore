@@ -23,6 +23,7 @@ db3.log
 /metadata/.bin/
 /metadata/.yarn/
 /metadata/cache/
+/metadata/typechain/
 /metadata/artifacts/
 indexer.db
 indexer
