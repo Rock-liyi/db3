@@ -166,6 +166,12 @@ contract DB3MetaStore is IDB3MetaStore {
         uint64 networkId,
         string memory indexNodeUrl
     ) public returns (bool success) {
+
+            // Check if index node URL is not empty
+        require(bytes(indexNodeUrl).length > 0, "Empty index node URL");
+
+
+
         // Check if network is registered
         NetworkRegistration storage registration = networkRegistrations[
             networkId
@@ -175,33 +181,20 @@ contract DB3MetaStore is IDB3MetaStore {
             "Network not registered"
         );
 
-        // Check if sender is in the list of index node addresses
+     
+       // Check if sender is in the list of index node addresses
         bool senderIsRegistered = false;
         for (uint i = 0; i < registration.indexNodeAddresses.length; i++) {
             if (registration.indexNodeAddresses[i] == msg.sender) {
                 senderIsRegistered = true;
-                break;
-            }
-        }
-        require(
-            senderIsRegistered,
-            "Sender address is not a registered Index node"
-        );
-
-        // Check if index node URL is not empty
-        require(bytes(indexNodeUrl).length > 0, "Empty index node URL");
-
-        // Update or add Index node URL to array in registration struct
-        bool indexNodeUpdated = false;
-        for (uint i = 0; i < registration.indexNodeUrls.length; i++) {
-            if (registration.indexNodeAddresses[i] == msg.sender) {
+                // Update or add Index node URL to array in registration struct
                 registration.indexNodeUrls[i] = indexNodeUrl;
-                indexNodeUpdated = true;
                 break;
             }
         }
 
-        return indexNodeUpdated;
+        require(senderIsRegistered, "Sender address is not a registered Index node");
+        return true;
     }
 
     // Update network information for a specific network ID
